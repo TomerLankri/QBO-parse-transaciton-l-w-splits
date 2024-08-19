@@ -3,7 +3,7 @@ import pandas as pd
 import json
 import uuid
 
-with open("input.json", "r") as file:
+with open("../pythonScript/pythonScript/input.json", "r") as file:
     data = json.load(file)
 
 # Extract column headers
@@ -41,117 +41,98 @@ def transform_row(row):
 
 # Apply the transformation to each row in the DataFrame
 transformed_df = df.apply(transform_row, axis=1)
-arr = ["id", "Name value", "date", "Memo/Description", "Account id", 'Account value', "Date", "Transaction Type id",
+arr = ["Name value", "date", "Memo/Description", "Account id", 'Account value', "Date", "Transaction Type id",
        "Transaction Type value", "Department id", "Amount"]
 df = transformed_df[[col for col in arr if col in transformed_df.columns]]
 df = df.fillna("")
 
-rename = {'id': 'original_transaction_id',
-          'Name value': 'name',
-          'Memo/Description': 'memo',
-          'Account value': 'account',
-          'Account id': 'Account id',
-          'Transaction Type id': 'transaction_id',
-          'Transaction Type value': 'transaction_type',
-          'Date': 'date',
-          'Department id': 'department_id',
-          'Amount': 'amount'
-          }
+rename = {
+    'Name value': 'name',
+    'Memo/Description': 'memo',
+    'Account value': 'account',
+    'Account id': 'from_account_id',
+    'Transaction Type id': 'original_transaction_id',
+    'Transaction Type value': 'transaction_type',
+    'Date': 'date',
+    'Department id': 'department_id',
+    'Amount': 'amount'
+}
 df = df.rename(columns=rename)
+df['to_account_id'] = ""
+previous_index = None
 
-# Forward-fill the id column to propagate the previous id to subsequent rows
-df['Previous id'] = df['original_transaction_id'].replace('', pd.NA)
-df['original_transaction_id'] = df['original_transaction_id'].replace('', pd.NA).fillna(method='ffill')
-df = df.dropna(subset=['original_transaction_id'])
-df = df.drop(columns=['Previous id'])
-mask = df.drop(columns=['original_transaction_id']).applymap(lambda x: x == "" or pd.isna(x)).all(axis=1) & df[
-    'original_transaction_id'].notna()
-df = df[~mask]
-
-# Reset the index if needed
-df.reset_index(drop=True, inplace=True)
-df["original_transaction_id"] = df["original_transaction_id"].replace('', pd.NA).fillna(method='ffill')
-df['original_transaction_id'] = df['transaction_id']
-
-# Iterate through rows to set 'from_account_id' and 'to_account_id'
-df['from_account_id'] = None
-df['to_account_id'] = None
-for i in range(len(df)):
-    if i < len(df) - 1:
-        current_row = df.iloc[i]
-        next_row = df.iloc[i + 1]
-
-        if current_row['transaction_type'] and not next_row['transaction_type']:
-            df.at[i, 'to_account_id'] = next_row['Account id']
-            df.at[i, 'from_account_id'] = current_row['Account id']
-        elif not current_row['transaction_type'] and i > 0 and df.iloc[i - 1]['transaction_type']:
-            prev_row = df.iloc[i - 1]
-            df.at[i, 'from_account_id'] = prev_row['Account id']
-            df.at[i, 'to_account_id'] = current_row['Account id']
-        elif not current_row['transaction_type'] and i > 0 and not df.iloc[i - 1]['transaction_type']:
-            df.at[i, 'to_account_id'] = None
-
-arr = ["original_transaction_id", "name", "memo", "date", "account", "department_id", "from_account_id",
-       "to_account_id", "transaction_type", "amount"]
-df = df[[col for col in arr if col in df.columns]]
-
-# Iterate name, memo, date from previous
-for i in range(1, len(df)):
-    if pd.isna(df.at[i, 'name']) or df.at[i, 'name'] == "":
-        df.at[i, 'name'] = df.at[i - 1, 'name']
-    if pd.isna(df.at[i, 'memo']) or df.at[i, 'memo'] == "":
-        df.at[i, 'memo'] = df.at[i - 1, 'memo']
-    # Handle date
-    if pd.isna(df.at[i, 'date']) or df.at[i, 'date'] == "" or df.at[i, 'date'] == "0-00-00":
-        df.at[i, 'date'] = df.at[i - 1, 'date']
-df['id'] = [str(uuid.uuid4()) for _ in range(len(df))]
-
-df['from_account_id'] = df['from_account_id'].fillna(method='ffill')
-df['to_account_id'] = df['to_account_id'].fillna(method='ffill')
-
-# Variable to keep track of the current split_id
-current_split_id = None
-
-# Iterate over DataFrame rows
+# Iterate through the DataFrame
 for index, row in df.iterrows():
-    if row['transaction_type'] != "":
-        current_split_id = row['id']
-    if current_split_id is not None:
-        df.at[index, 'split_id'] = current_split_id
+    # Check if the current row is not entirely null
+    if not row.isnull().all():
+        if previous_index is not None:
+            # Assign the 'from_account_id' of the current row to the 'to_account_id' of the previous non-null row
+            df.at[previous_index, 'to_account_id'] = row['from_account_id']
 
-for i in range(1, len(df)):
-    if pd.isna(df.at[i, 'transaction_type']) or df.at[i, 'transaction_type'] == "":
-        df.at[i, 'transaction_type'] = df.at[i - 1, 'transaction_type']
-df.reset_index(drop=True, inplace=True)
+        # Update previous_index to current index
+        previous_index = index
 
-def transform_data(df):
-    # Create a dictionary to keep track of the new 'from_id' values for each split_id
-    new_from_id_map = {}
-
-    # Iterate over the DataFrame rows
-    for index, row in df.iterrows():
-        if row['id'] != row['split_id']:
-            # If split_id not seen before, use the 'to_id' from the first entry
-            if row['split_id'] not in new_from_id_map:
-                # Store the initial 'from_id' of the current split_id
-                new_from_id_map[row['split_id']] = row['to_account_id']
-
-            # Update 'from_id' to the last seen 'to_id' for this split_id
-            df.at[index, 'from_account_id'] = new_from_id_map[row['split_id']]
-            # Set 'to_id' to None
-            df.at[index, 'to_account_id'] = None
-
-    return df
+df.loc[df['from_account_id'] == "", 'to_account_id'] = ""
 
 
-# Transform the data
-df_transformed = transform_data(df)
-grouped = df.groupby('split_id')
-filtered = grouped.apply(lambda x: x.iloc[[0]] if len(x) == 2 else x).reset_index(drop=True)
-filtered.loc[filtered['id'] == filtered['split_id'], 'split_id'] = np.nan
+# Add 'split_id' column for the final output
+def should_assign_uuid(row):
+    return not all(cell == '' for cell in row)
 
 
-# Reset index to flatten the DataFrame
-filtered.to_json('output.json', orient='records')
+# Apply function and assign UUIDs where appropriate
+df['id'] = df.apply(lambda row: str(uuid.uuid4()) if should_assign_uuid(row) else "", axis=1)
+df['split_id'] = ""
+
+
+# Function to check if all values in a row are empty strings
+def is_row_empty(row):
+    return all(value == '' for value in row)
+
+
+# Initialize variables
+current_uuid = None
+assign_uuid = False
+
+for index, row in df.iterrows():
+    if is_row_empty(row):
+        assign_uuid = False
+    else:
+        if not assign_uuid:
+            current_uuid = row['id']
+            assign_uuid = True
+        df.at[index, 'split_id'] = current_uuid
+
+df['split_id'] = df.apply(lambda row: "" if row['id'] == row['split_id'] else row['split_id'], axis=1)
+df['to_account_id'] = df.apply(lambda row: "" if row['split_id'] != "" else row['to_account_id'], axis=1)
+
+# Ensure columns are of string type for exact matching
+df['split_id'] = df['split_id'].astype(str)
+df['id'] = df['id'].astype(str)
+
+# Filter out rows with empty split_id
+filtered_df = df[(df['split_id'] == '') & (df['id'] != '')]
+
+# Merge DataFrame with itself based on split_id and id
+merged_df = df.merge(filtered_df[['id', 'name', 'date', 'transaction_type']],
+                     left_on='split_id',
+                     right_on='id',
+                     suffixes=('', '_parent'),
+                     how='left')
+merged_df = merged_df.fillna('')
+
+df['name'] = np.where(df['name'] == '', merged_df['name_parent'], df['name'])
+df['date'] = np.where(df['date'] == '0-00-00', merged_df['date_parent'], df['date'])
+df['transaction_type'] = np.where(df['transaction_type'] == '', merged_df['transaction_type_parent'],
+                                  df['transaction_type'])
+
+split_id_counts = df['split_id'].value_counts()
+
+# Filter out split_id that only appears once
+split_id_to_keep = split_id_counts[split_id_counts > 1].index
+
+# Keep only rows with split_id that appear more than once
+df = df[df['split_id'].isin(split_id_to_keep)]
+df_filtered = df[df['id'] != '']
 
 print(df)
